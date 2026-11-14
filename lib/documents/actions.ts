@@ -4,9 +4,16 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
+import type { JSONContent } from "@tiptap/react";
 import { getDb } from "@/lib/db";
 import { documents } from "@/lib/db/schema";
 import { getCurrentUser, getDocumentForUser, canWrite } from "@/lib/auth/dal";
+import {
+  convertFileToDocumentJSON,
+  titleFromFileName,
+  SUPPORTED_IMPORT_EXTENSIONS,
+  UnsupportedFileTypeError,
+} from "@/lib/documents/import";
 
 const EMPTY_DOC = { type: "doc", content: [{ type: "paragraph" }] };
 
@@ -93,6 +100,57 @@ export async function saveDocumentContent(
 
   revalidatePath("/documents");
   return { ok: true };
+}
+
+const MAX_IMPORT_BYTES = 5_000_000;
+
+function extensionOf(fileName: string): string {
+  const parts = fileName.toLowerCase().split(".");
+  return parts.length > 1 ? parts[parts.length - 1] : "";
+}
+
+// Imports always create a new document. Inserting into an already-open
+// draft was in scope for this exercise but cut to keep the feature
+// predictable within the timebox -- see ARCHITECTURE.md.
+export async function importDocument(formData: FormData) {
+  const user = await getCurrentUser();
+  if (!user) redirect("/sign-in");
+
+  const file = formData.get("file");
+  if (!(file instanceof File) || file.size === 0) {
+    redirect("/documents?importError=missing-file");
+  }
+
+  const ext = extensionOf(file.name);
+  if (!SUPPORTED_IMPORT_EXTENSIONS.includes(ext)) {
+    redirect("/documents?importError=unsupported-type");
+  }
+
+  if (file.size > MAX_IMPORT_BYTES) {
+    redirect("/documents?importError=too-large");
+  }
+
+  const buffer = Buffer.from(await file.arrayBuffer());
+
+  let content: JSONContent;
+  try {
+    content = await convertFileToDocumentJSON(file.name, buffer);
+  } catch (error) {
+    redirect(
+      error instanceof UnsupportedFileTypeError
+        ? "/documents?importError=unsupported-type"
+        : "/documents?importError=conversion-failed",
+    );
+  }
+
+  const db = await getDb();
+  const [doc] = await db
+    .insert(documents)
+    .values({ title: titleFromFileName(file.name), ownerId: user.id, content })
+    .returning();
+
+  revalidatePath("/documents");
+  redirect(`/documents/${doc.id}`);
 }
 
 const deleteSchema = z.object({ documentId: z.string().uuid() });

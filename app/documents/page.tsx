@@ -4,13 +4,26 @@ import { getDocumentsForUser } from "@/lib/documents/queries";
 import { signOut } from "@/app/sign-in/actions";
 import { DocumentRow } from "./document-row";
 import { NewDocumentButton } from "./new-document-button";
+import { ImportButton } from "./import-button";
 
-export default async function DocumentsPage() {
+const IMPORT_ERROR_MESSAGES: Record<string, string> = {
+  "missing-file": "Choose a file before importing.",
+  "unsupported-type": "That file type isn't supported. Use .txt, .md, or .docx.",
+  "too-large": "That file is larger than the 5MB import limit.",
+  "conversion-failed": "Couldn't read that file. It may be corrupted.",
+};
+
+export default async function DocumentsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ importError?: string }>;
+}) {
   const user = await getCurrentUser();
   if (!user) {
     redirect("/sign-in");
   }
 
+  const { importError } = await searchParams;
   const { owned, shared } = await getDocumentsForUser(user.id);
 
   return (
@@ -29,13 +42,26 @@ export default async function DocumentsPage() {
         </div>
       </header>
 
+      {importError && (
+        <p className="mt-4 border border-line px-3 py-2 text-sm text-accent">
+          {IMPORT_ERROR_MESSAGES[importError] ?? "Couldn't import that file."}
+        </p>
+      )}
+
       <section className="mt-8">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-4">
           <h2 className="text-sm font-medium text-ink-muted">
             Your documents
           </h2>
-          <NewDocumentButton />
+          <div className="flex items-center gap-2">
+            <ImportButton />
+            <NewDocumentButton />
+          </div>
         </div>
+        <p className="mt-1 text-xs text-ink-faint">
+          Import accepts .txt, .md, or .docx (up to 5MB) and creates a new
+          document.
+        </p>
         {owned.length === 0 ? (
           <p className="mt-4 border border-line px-4 py-6 text-center text-sm text-ink-muted">
             No documents yet. Create one to get started.
