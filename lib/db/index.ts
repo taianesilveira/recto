@@ -10,6 +10,17 @@ type Database =
   | Awaited<ReturnType<typeof createPgliteDb>>;
 
 async function createPgliteDb() {
+  const { PGlite } = await import("@electric-sql/pglite");
+  const { drizzle } = await import("drizzle-orm/pglite");
+
+  // Tests set this to get a throwaway in-memory database instead of
+  // the dev data directory, so test runs never read or mutate
+  // ./.data/recto.
+  if (process.env.PGLITE_IN_MEMORY === "1") {
+    const client = new PGlite();
+    return drizzle({ client, schema });
+  }
+
   const { mkdirSync } = await import("node:fs");
   const { resolve } = await import("node:path");
   // PGlite resolves this path internally in a way that breaks on a
@@ -17,8 +28,6 @@ async function createPgliteDb() {
   // (different cwd assumptions). An absolute path avoids that.
   const dataDir = resolve(process.cwd(), ".data/recto");
   mkdirSync(dataDir, { recursive: true });
-  const { PGlite } = await import("@electric-sql/pglite");
-  const { drizzle } = await import("drizzle-orm/pglite");
   const client = new PGlite(dataDir);
   return drizzle({ client, schema });
 }
