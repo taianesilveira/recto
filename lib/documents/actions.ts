@@ -54,6 +54,47 @@ export async function renameDocument(formData: FormData) {
   revalidatePath(`/documents/${parsed.data.documentId}`);
 }
 
+// ProseMirror JSON can nest arbitrarily; z.unknown() with a manual size
+// check is cheaper and more honest than trying to fully type it here.
+const MAX_CONTENT_BYTES = 2_000_000;
+
+const saveContentSchema = z.object({
+  documentId: z.string().uuid(),
+  content: z.unknown(),
+});
+
+export type SaveResult = { ok: true } | { ok: false; error: string };
+
+export async function saveDocumentContent(
+  documentId: string,
+  content: unknown,
+): Promise<SaveResult> {
+  const user = await getCurrentUser();
+  if (!user) return { ok: false, error: "Not signed in." };
+
+  const parsed = saveContentSchema.safeParse({ documentId, content });
+  if (!parsed.success) return { ok: false, error: "Invalid request." };
+
+  const size = JSON.stringify(parsed.data.content).length;
+  if (size > MAX_CONTENT_BYTES) {
+    return { ok: false, error: "Document is too large to save." };
+  }
+
+  const access = await getDocumentForUser(parsed.data.documentId, user.id);
+  if (!access || !canWrite(access.role)) {
+    return { ok: false, error: "You don't have permission to edit this." };
+  }
+
+  const db = await getDb();
+  await db
+    .update(documents)
+    .set({ content: parsed.data.content, updatedAt: new Date() })
+    .where(eq(documents.id, parsed.data.documentId));
+
+  revalidatePath("/documents");
+  return { ok: true };
+}
+
 const deleteSchema = z.object({ documentId: z.string().uuid() });
 
 export async function deleteDocument(formData: FormData) {
