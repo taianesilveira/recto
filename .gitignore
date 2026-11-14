@@ -36,6 +36,9 @@ yarn-error.log*
 # vercel
 .vercel
 
+# local PGlite database (used when DATABASE_URL is unset)
+/.data
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts
