@@ -2,12 +2,17 @@
 
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
-import { eq } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 import { z } from "zod";
 import type { JSONContent } from "@tiptap/react";
 import { getDb } from "@/lib/db";
-import { documents } from "@/lib/db/schema";
-import { getCurrentUser, getDocumentForUser, canWrite } from "@/lib/auth/dal";
+import { documents, documentShares, users } from "@/lib/db/schema";
+import {
+  getCurrentUser,
+  getDocumentForUser,
+  canWrite,
+  canManageSharing,
+} from "@/lib/auth/dal";
 import {
   convertFileToDocumentJSON,
   titleFromFileName,
@@ -151,6 +156,95 @@ export async function importDocument(formData: FormData) {
 
   revalidatePath("/documents");
   redirect(`/documents/${doc.id}`);
+}
+
+const shareSchema = z.object({
+  documentId: z.string().uuid(),
+  email: z.string().trim().toLowerCase().email(),
+  role: z.enum(["editor", "viewer"]),
+});
+
+// Sharing management is owner-only (see .kiro/skills/authz-boundary):
+// an editor can change content but must not be able to grant or revoke
+// anyone else's access, including their own.
+export async function shareDocument(formData: FormData) {
+  const user = await getCurrentUser();
+  if (!user) redirect("/sign-in");
+
+  const documentId = String(formData.get("documentId") ?? "");
+  const parsed = shareSchema.safeParse({
+    documentId,
+    email: formData.get("email"),
+    role: formData.get("role"),
+  });
+  if (!parsed.success) {
+    redirect(`/documents/${documentId}?shareError=invalid`);
+  }
+
+  const access = await getDocumentForUser(parsed.data.documentId, user.id);
+  if (!access || !canManageSharing(access.role)) {
+    redirect(`/documents/${parsed.data.documentId}?shareError=forbidden`);
+  }
+
+  const db = await getDb();
+  const [target] = await db
+    .select()
+    .from(users)
+    .where(eq(users.email, parsed.data.email))
+    .limit(1);
+
+  if (!target) {
+    redirect(`/documents/${parsed.data.documentId}?shareError=no-account`);
+  }
+
+  if (target.id === access.document.ownerId) {
+    redirect(`/documents/${parsed.data.documentId}?shareError=is-owner`);
+  }
+
+  await db
+    .insert(documentShares)
+    .values({
+      documentId: parsed.data.documentId,
+      userId: target.id,
+      role: parsed.data.role,
+    })
+    .onConflictDoUpdate({
+      target: [documentShares.documentId, documentShares.userId],
+      set: { role: parsed.data.role },
+    });
+
+  revalidatePath(`/documents/${parsed.data.documentId}`);
+}
+
+const revokeShareSchema = z.object({
+  documentId: z.string().uuid(),
+  shareId: z.string().uuid(),
+});
+
+export async function revokeShare(formData: FormData) {
+  const user = await getCurrentUser();
+  if (!user) redirect("/sign-in");
+
+  const parsed = revokeShareSchema.safeParse({
+    documentId: formData.get("documentId"),
+    shareId: formData.get("shareId"),
+  });
+  if (!parsed.success) return;
+
+  const access = await getDocumentForUser(parsed.data.documentId, user.id);
+  if (!access || !canManageSharing(access.role)) return;
+
+  const db = await getDb();
+  await db
+    .delete(documentShares)
+    .where(
+      and(
+        eq(documentShares.id, parsed.data.shareId),
+        eq(documentShares.documentId, parsed.data.documentId),
+      ),
+    );
+
+  revalidatePath(`/documents/${parsed.data.documentId}`);
 }
 
 const deleteSchema = z.object({ documentId: z.string().uuid() });
